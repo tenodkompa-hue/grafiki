@@ -1,8 +1,7 @@
 "use client";
 
 import { ChangeEvent, DragEvent, useRef, useState } from "react";
-import { createWorker } from "tesseract.js";
-import { calculateHourlyStaff, parseScheduleLines, type OcrLine, type ShiftRow } from "../lib/schedule";
+import { calculateHourlyStaff, type ShiftRow } from "../lib/schedule";
 
 type SelectedImage = {
   id: string;
@@ -62,45 +61,52 @@ export default function Home() {
     setIsProcessing(true);
     setRows([]);
     setHasRun(false);
-    let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
     const parsedRows: ShiftRow[] = [];
 
     try {
-      worker = await createWorker("pol+eng");
       for (const image of images) {
         setImages((current) => current.map((item) =>
           item.id === image.id ? { ...item, status: "processing", progress: 0, text: undefined } : item
         ));
         try {
-          // Tesseract.js v6 returns word-level data inside blocks when enabled.
-          const result = await worker.recognize(image.file, {}, { blocks: true });
-          const ocrWords = (result.data.blocks ?? [])
-            .flatMap((block) => block.paragraphs ?? [])
-            .flatMap((paragraph) => paragraph.lines ?? [])
-            .flatMap((line) => line.words ?? []);
-          const lines: OcrLine[] = ocrWords.map((word) => ({
-            text: word.text,
-            confidence: word.confidence,
-            bbox: word.bbox,
+          const form = new FormData();
+          form.append("image", image.file);
+          const response = await fetch("/api/analyze", { method: "POST", body: form });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "Nie udało się przeanalizować zdjęcia.");
+
+          const employees = Array.isArray(payload.employees) ? payload.employees : [];
+          parsedRows.push(...employees.map((employee: {
+            name?: string; description?: string; start?: string | null; end?: string | null;
+            excluded?: boolean; confidence?: number; issue?: string;
+          }, index: number): ShiftRow => {
+            const confidence = Number(employee.confidence ?? 0);
+            const validTimes = Boolean(employee.start && employee.end);
+            const status: ShiftRow["status"] = !validTimes ? "red" : confidence >= 85 && !employee.issue ? "green" : "orange";
+            return {
+              id: `${image.id}-ai-${index}`,
+              name: employee.name || "Nie rozpoznano nazwiska",
+              description: employee.description || "",
+              start: employee.start || null,
+              end: employee.end || null,
+              excluded: Boolean(employee.excluded),
+              status,
+              issue: employee.issue || (!validTimes ? "Brak pewnego początku lub końca zmiany" : confidence < 85 ? "Sprawdź odczyt AI" : ""),
+              sourceLines: [],
+            };
           }));
-          parsedRows.push(...parseScheduleLines(lines).map((row) => ({ ...row, id: `${image.id}-${row.id}` })));
           setImages((current) => current.map((item) =>
-            item.id === image.id ? { ...item, status: "done", progress: 100, text: result.data.text } : item
+            item.id === image.id ? { ...item, status: "done", progress: 100, text: `Rozpoznano ${employees.length} wierszy pracowników.` } : item
           ));
-        } catch {
+        } catch (error) {
           setImages((current) => current.map((item) =>
-            item.id === image.id ? { ...item, status: "error" } : item
+            item.id === image.id ? { ...item, status: "error", text: error instanceof Error ? error.message : "Błąd analizy" } : item
           ));
         }
       }
       setRows(parsedRows);
       setHasRun(true);
-    } catch {
-      setImages((current) => current.map((item) =>
-        item.status === "processing" ? { ...item, status: "error" } : item
-      ));
     } finally {
-      if (worker) await worker.terminate();
       setIsProcessing(false);
     }
   }
