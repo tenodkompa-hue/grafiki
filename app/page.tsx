@@ -2,6 +2,7 @@
 
 import { ChangeEvent, DragEvent, useRef, useState } from "react";
 import { createWorker } from "tesseract.js";
+import { calculateHourlyStaff, parseScheduleLines, type OcrLine, type ShiftRow } from "../lib/schedule";
 
 type SelectedImage = {
   id: string;
@@ -17,26 +18,22 @@ const MAX_IMAGES = 5;
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [images, setImages] = useState<SelectedImage[]>([]);
+  const [rows, setRows] = useState<ShiftRow[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [hasRun, setHasRun] = useState(false);
 
   function addFiles(fileList: FileList | File[]) {
-    const incoming = Array.from(fileList).filter((file) =>
-      file.type.startsWith("image/")
-    );
-
+    const incoming = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
     setImages((current) => {
-      const room = MAX_IMAGES - current.length;
-      const accepted = incoming.slice(0, Math.max(0, room));
-      const next = accepted.map((file) => ({
-        id: crypto.randomUUID(),
-        file,
-        preview: URL.createObjectURL(file),
-        progress: 0,
-        status: "ready" as const,
-      }));
-      return [...current, ...next];
+      const accepted = incoming.slice(0, Math.max(0, MAX_IMAGES - current.length));
+      return [...current, ...accepted.map((file) => ({
+        id: crypto.randomUUID(), file, preview: URL.createObjectURL(file),
+        progress: 0, status: "ready" as const,
+      }))];
     });
+    setRows([]);
+    setHasRun(false);
   }
 
   function onInputChange(event: ChangeEvent<HTMLInputElement>) {
@@ -56,70 +53,69 @@ export default function Home() {
       if (target) URL.revokeObjectURL(target.preview);
       return current.filter((item) => item.id !== id);
     });
+    setRows([]);
+    setHasRun(false);
   }
 
   async function runOcr() {
     if (!images.length || isProcessing) return;
     setIsProcessing(true);
-
+    setRows([]);
+    setHasRun(false);
     let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
+    const extracted: OcrLine[] = [];
 
     try {
       worker = await createWorker("pol+eng");
-
       for (const image of images) {
-        setImages((current) =>
-          current.map((item) =>
-            item.id === image.id
-              ? { ...item, status: "processing", progress: 0, text: undefined }
-              : item
-          )
-        );
-
+        setImages((current) => current.map((item) =>
+          item.id === image.id ? { ...item, status: "processing", progress: 0, text: undefined } : item
+        ));
         try {
-          const result = await worker.recognize(image.file, {}, {
-            blocks: true,
-          });
-          setImages((current) =>
-            current.map((item) =>
-              item.id === image.id
-                ? {
-                    ...item,
-                    status: "done",
-                    progress: 100,
-                    text: result.data.text,
-                  }
-                : item
-            )
-          );
+          const result = await worker.recognize(image.file);
+          const words = result.data.words ?? [];
+          const lines: OcrLine[] = words.map((word) => ({
+            text: word.text,
+            confidence: word.confidence,
+            bbox: word.bbox,
+          }));
+          extracted.push(...lines);
+          setImages((current) => current.map((item) =>
+            item.id === image.id ? { ...item, status: "done", progress: 100, text: result.data.text } : item
+          ));
         } catch {
-          setImages((current) =>
-            current.map((item) =>
-              item.id === image.id ? { ...item, status: "error" } : item
-            )
-          );
+          setImages((current) => current.map((item) =>
+            item.id === image.id ? { ...item, status: "error" } : item
+          ));
         }
       }
+      const parsed = parseScheduleLines(extracted);
+      setRows(parsed);
+      setHasRun(true);
     } catch {
-      setImages((current) =>
-        current.map((item) =>
-          item.status === "processing" ? { ...item, status: "error" } : item
-        )
-      );
+      setImages((current) => current.map((item) =>
+        item.status === "processing" ? { ...item, status: "error" } : item
+      ));
     } finally {
       if (worker) await worker.terminate();
       setIsProcessing(false);
     }
   }
 
+  function updateRow(id: string, patch: Partial<ShiftRow>) {
+    setRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
+  }
+
+  const hours = calculateHourlyStaff(rows);
   const completedCount = images.filter((image) => image.status === "done").length;
+  const activeRows = rows.filter((row) => !row.excluded && row.status !== "red");
+  const reviewCount = rows.filter((row) => row.status !== "green" && !row.excluded).length;
 
   return (
     <main className="page-shell">
       <header className="topbar">
         <a className="brand" href="#" aria-label="Chatelier Solutions">
-          <span className="brand-mark">CS</span>
-          <span>CHATELIER <b>SOLUTIONS</b></span>
+          <span className="brand-mark">CS</span><span>CHATELIER <b>SOLUTIONS</b></span>
         </a>
         <span className="topbar-note">NARZĘDZIE DO ANALIZY GRAFIKÓW</span>
       </header>
@@ -127,125 +123,66 @@ export default function Home() {
       <section className="hero">
         <div className="eyebrow"><span /> WORKFORCE ANALYTICS</div>
         <h1>Grafik pod kontrolą.<br /><span>Godzina po godzinie.</span></h1>
-        <p className="hero-copy">
-          Dodaj zdjęcia grafiku, a przygotujemy dane do analizy obsady
-          pracowników w poszczególnych godzinach.
-        </p>
+        <p className="hero-copy">Dodaj zdjęcia grafiku, aby odczytać zmiany i policzyć obsadę pracowników w każdej godzinie.</p>
 
-        <div
-          className={`upload-zone ${isDragging ? "dragging" : ""}`}
-          onDragOver={(event) => {
-            event.preventDefault();
-            setIsDragging(true);
-          }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={onDrop}
-        >
-          <input
-            ref={inputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={onInputChange}
-            hidden
-          />
+        <div className={`upload-zone ${isDragging ? "dragging" : ""}`}
+          onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }}
+          onDragLeave={() => setIsDragging(false)} onDrop={onDrop}>
+          <input ref={inputRef} type="file" accept="image/*" multiple onChange={onInputChange} hidden />
           <div className="upload-icon">↑</div>
           <h2>Dodaj zdjęcia grafiku</h2>
           <p>Przeciągnij pliki tutaj lub wybierz je z urządzenia</p>
-          <button className="button button-light" onClick={() => inputRef.current?.click()}>
-            Wybierz zdjęcia
-          </button>
+          <button className="button button-light" onClick={() => inputRef.current?.click()}>Wybierz zdjęcia</button>
           <span className="upload-hint">JPG, PNG lub WEBP · maksymalnie 5 zdjęć</span>
         </div>
 
-        {images.length > 0 && (
-          <section className="files-section">
-            <div className="section-heading">
-              <div>
-                <span className="mini-label">MATERIAŁ ŹRÓDŁOWY</span>
-                <h2>Wybrane zdjęcia <span className="count">{images.length}/{MAX_IMAGES}</span></h2>
-              </div>
-              <button
-                className="text-button"
-                onClick={() => {
-                  images.forEach((image) => URL.revokeObjectURL(image.preview));
-                  setImages([]);
-                }}
-                disabled={isProcessing}
-              >
-                Usuń wszystkie
-              </button>
+        {images.length > 0 && <section className="files-section">
+          <div className="section-heading"><div><span className="mini-label">MATERIAŁ ŹRÓDŁOWY</span>
+            <h2>Wybrane zdjęcia <span className="count">{images.length}/{MAX_IMAGES}</span></h2></div>
+            <button className="text-button" onClick={() => {
+              images.forEach((image) => URL.revokeObjectURL(image.preview));
+              setImages([]); setRows([]); setHasRun(false);
+            }} disabled={isProcessing}>Usuń wszystkie</button>
+          </div>
+          <div className="image-grid">{images.map((image, index) => <article className="image-card" key={image.id}>
+            <div className="preview-wrap"><img src={image.preview} alt={`Zdjęcie grafiku ${index + 1}`} />
+              <button className="remove-button" onClick={() => removeImage(image.id)} disabled={isProcessing} aria-label="Usuń zdjęcie">×</button>
             </div>
-
-            <div className="image-grid">
-              {images.map((image, index) => (
-                <article className="image-card" key={image.id}>
-                  <div className="preview-wrap">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={image.preview} alt={`Zdjęcie grafiku ${index + 1}`} />
-                    <button
-                      className="remove-button"
-                      onClick={() => removeImage(image.id)}
-                      disabled={isProcessing}
-                      aria-label="Usuń zdjęcie"
-                    >×</button>
-                  </div>
-                  <div className="image-meta">
-                    <span>ARKUSZ {String(index + 1).padStart(2, "0")}</span>
-                    <span className={`status status-${image.status}`}>
-                      {image.status === "ready" && "Gotowe"}
-                      {image.status === "processing" && "Odczytuję…"}
-                      {image.status === "done" && "Odczyt zakończony"}
-                      {image.status === "error" && "Błąd odczytu"}
-                    </span>
-                  </div>
-                </article>
-              ))}
+            <div className="image-meta"><span>ARKUSZ {String(index + 1).padStart(2, "0")}</span>
+              <span className={`status status-${image.status}`}>{image.status === "ready" ? "Gotowe" : image.status === "processing" ? "Odczytuję…" : image.status === "done" ? "Odczyt zakończony" : "Błąd odczytu"}</span>
             </div>
+          </article>)}</div>
+          <button className="button button-primary analyze-button" onClick={runOcr} disabled={isProcessing || !images.length}>
+            {isProcessing ? "Odczytuję i analizuję grafik…" : "Odczytaj i policz obsadę"} <span>↗</span>
+          </button>
+          {completedCount > 0 && <p className="privacy-note">Odczytano {completedCount} z {images.length} zdjęć. Przetwarzanie odbywa się w przeglądarce.</p>}
+        </section>}
 
-            <button
-              className="button button-primary analyze-button"
-              onClick={runOcr}
-              disabled={isProcessing || images.length === 0}
-            >
-              {isProcessing ? "Odczytuję tekst ze zdjęć…" : "Rozpocznij odczyt zdjęć"}
-              <span>↗</span>
-            </button>
-            {completedCount > 0 && (
-              <p className="privacy-note">
-                Odczytano {completedCount} z {images.length} zdjęć. Przetwarzanie odbywa się w Twojej przeglądarce.
-              </p>
-            )}
-          </section>
-        )}
-
-        {images.some((image) => image.text !== undefined) && (
-          <section className="ocr-section">
-            <div className="section-heading">
-              <div>
-                <span className="mini-label">WYNIK ETAPU 1</span>
-                <h2>Tekst rozpoznany ze zdjęć</h2>
-              </div>
-              <span className="review-label">WYMAGA WERYFIKACJI</span>
-            </div>
-            <p className="ocr-intro">
-              To wstępny odczyt OCR, a nie jeszcze policzona obsada. Zdjęcia grafiku
-              mogą zawierać skreślenia i odręczne poprawki, dlatego wynik trzeba zweryfikować.
-            </p>
-            {images.filter((image) => image.text !== undefined).map((image, index) => (
-              <details className="ocr-result" key={image.id}>
-                <summary>Zdjęcie {index + 1} <span>Podgląd rozpoznanego tekstu</span></summary>
-                <pre>{image.text || "Nie udało się rozpoznać tekstu."}</pre>
-              </details>
-            ))}
-          </section>
-        )}
+        {hasRun && <section className="results-section">
+          <div className="section-heading"><div><span className="mini-label">WYNIK ANALIZY</span><h2>Obsada godzinowa</h2></div>
+            <span className="review-label">{reviewCount ? `${reviewCount} DO WERYFIKACJI` : "ODCZYT ZAKOŃCZONY"}</span>
+          </div>
+          <p className="ocr-intro">Zasada liczenia: zaokrąglamy początek zmiany w dół do pełnej godziny, a godzinę końca traktujemy jako wyłączną. Zmiana 10:15–18:15 jest liczona od 10:00 do 17:00. Wiersze niepewne wymagają sprawdzenia.</p>
+          <div className="hour-grid">{hours.map((item) => <details className={`hour-card ${item.uncertain ? "hour-review" : ""}`} key={item.hour}>
+            <summary><span>{String(item.hour).padStart(2, "0")}:00</span><strong>{item.count}</strong>
+              <small>{item.uncertain ? `sprawdź ${item.uncertain}` : "osób"}</small></summary>
+            <div className="hour-people">{item.employees.length ? item.employees.map((name, index) => <div key={index}>{name}</div>) : <span>Brak pracowników</span>}</div>
+          </details>)}</div>
+          <div className="section-heading employee-heading"><div><span className="mini-label">DANE ODCZYTANE Z TABELI</span><h2>Weryfikacja zmian <span className="count">{rows.length} wierszy</span></h2></div></div>
+          <p className="ocr-intro">Możesz poprawić nazwisko i godziny. Wiersze z niepewnym odczytem są oznaczone na pomarańczowo lub czerwono. Wykluczone kody w opisie: kons, kz1, kz2, kz3, Pw, pwsp.</p>
+          <div className="table-wrap"><table className="staff-table"><thead><tr><th>Pracownik</th><th>Od</th><th>Do</th><th>Opis / status</th><th>Wyklucz</th></tr></thead>
+            <tbody>{rows.map((row) => <tr key={row.id} className={`row-${row.status}`}>
+              <td><input aria-label="Nazwisko pracownika" value={row.name} onChange={(e) => updateRow(row.id, { name: e.target.value })} /></td>
+              <td><input aria-label="Początek zmiany" placeholder="--:--" value={row.start ?? ""} onChange={(e) => updateRow(row.id, { start: e.target.value || null, status: "orange", issue: "Godzina zmieniona ręcznie — sprawdź" })} /></td>
+              <td><input aria-label="Koniec zmiany" placeholder="--:--" value={row.end ?? ""} onChange={(e) => updateRow(row.id, { end: e.target.value || null, status: "orange", issue: "Godzina zmieniona ręcznie — sprawdź" })} /></td>
+              <td><span className="row-issue">{row.excluded ? "Wykluczony kodem" : row.issue || row.description || "Odczyt pewny"}</span></td>
+              <td><input type="checkbox" checked={row.excluded} onChange={(e) => updateRow(row.id, { excluded: e.target.checked })} aria-label="Wyklucz pracownika" /></td>
+            </tr>)}</tbody></table></div>
+          <div className="legend"><span className="legend-green">● Pewny odczyt</span><span className="legend-orange">● Sprawdź</span><span className="legend-red">● Nie udało się odczytać</span></div>
+          <p className="privacy-note">Wynik jest wstępną analizą OCR. Skreślenia, odręczne dopiski i dodatkowe segmenty zmian mogą wymagać ręcznej korekty. Nie traktuj automatycznego odczytu jako zatwierdzonego grafiku.</p>
+        </section>}
       </section>
-
-      <footer className="footer">
-        <span>CHATELIER SOLUTIONS</span>
-        <span>Prościej analizować. Lepiej planować.</span>
-      </footer>
+      <footer className="footer"><span>CHATELIER SOLUTIONS</span><span>Prościej analizować. Lepiej planować.</span></footer>
     </main>
   );
 }
