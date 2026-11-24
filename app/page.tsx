@@ -63,7 +63,7 @@ export default function Home() {
     setRows([]);
     setHasRun(false);
     let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
-    const extracted: OcrLine[] = [];
+    const parsedRows: ShiftRow[] = [];
 
     try {
       worker = await createWorker("pol+eng");
@@ -79,7 +79,7 @@ export default function Home() {
             confidence: word.confidence,
             bbox: word.bbox,
           }));
-          extracted.push(...lines);
+          parsedRows.push(...parseScheduleLines(lines).map((row) => ({ ...row, id: `${image.id}-${row.id}` })));
           setImages((current) => current.map((item) =>
             item.id === image.id ? { ...item, status: "done", progress: 100, text: result.data.text } : item
           ));
