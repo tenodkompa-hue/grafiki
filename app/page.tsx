@@ -89,8 +89,7 @@ export default function Home() {
           ));
         }
       }
-      const parsed = parseScheduleLines(extracted);
-      setRows(parsed);
+      setRows(parsedRows);
       setHasRun(true);
     } catch {
       setImages((current) => current.map((item) =>
