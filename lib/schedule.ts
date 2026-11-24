@@ -23,11 +23,11 @@ export type HourResult = {
   employees: string[];
 };
 
-const EXCLUDED_CODES = /\\b(kons|kz1|kz2|kz3|pwsp|pw)\\b/i;
-const TIME_RE = /(?<!\\d)([01]?\\d|2[0-3])[:.]([0-5]\\d)(?!\\d)/g;
+const EXCLUDED_CODES = /\b(kons|kz1|kz2|kz3|pwsp|pw)\b/i;
+const TIME_RE = /(?<!\d)([01]?\d|2[0-3])[:.]([0-5]\d)(?!\d)/g;
 
 function minutes(value: string): number | null {
-  const match = value.match(/(\\d{1,2})[:.]([0-5]\\d)/);
+  const match = value.match(/(\d{1,2})[:.]([0-5]\d)/);
   if (!match) return null;
   const hour = Number(match[1]);
   const minute = Number(match[2]);
@@ -53,8 +53,8 @@ function median(values: number[]) {
 function cleanName(prefix: string) {
   // Remove schedule metadata that appears between the name and the time columns.
   return prefix
-    .replace(/\\b\\d+\\s*\\/\\s*\\d+\\b.*$/i, "")
-    .replace(/\\b(?:instr|kurs|lobby|kons|\\d+\\s*h)\\b.*$/i, "")
+    .replace(/\b\d+\s*\/\s*\d+\b.*$/i, "")
+    .replace(/\b(?:instr|kurs|lobby|kons|\d+\s*h)\b.*$/i, "")
     .replace(/[|,;]+$/g, "")
     .trim();
 }
