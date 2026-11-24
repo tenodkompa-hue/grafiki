@@ -72,8 +72,12 @@ export default function Home() {
           item.id === image.id ? { ...item, status: "processing", progress: 0, text: undefined } : item
         ));
         try {
-          const result = await worker.recognize(image.file);
-          const words = result.data.words ?? [];
+          // Tesseract.js v6 returns word-level data inside blocks when enabled.
+          const result = await worker.recognize(image.file, {}, { blocks: true });
+          const words = (result.data.blocks ?? [])
+            .flatMap((block) => block.paragraphs)
+            .flatMap((paragraph) => paragraph.lines)
+            .flatMap((line) => line.words);
           const lines: OcrLine[] = words.map((word) => ({
             text: word.text,
             confidence: word.confidence,
