@@ -74,13 +74,14 @@ export default function Home() {
         try {
           // Tesseract.js v6 returns word-level data inside blocks when enabled.
           const result = await worker.recognize(image.file, {}, { blocks: true });
-          const ocrLines = (result.data.blocks ?? [])
-            .flatMap((block) => block.paragraphs)
-            .flatMap((paragraph) => paragraph.lines);
-          const lines: OcrLine[] = ocrLines.map((line) => ({
-            text: line.text,
-            confidence: line.confidence,
-            bbox: line.bbox,
+          const ocrWords = (result.data.blocks ?? [])
+            .flatMap((block) => block.paragraphs ?? [])
+            .flatMap((paragraph) => paragraph.lines ?? [])
+            .flatMap((line) => line.words ?? []);
+          const lines: OcrLine[] = ocrWords.map((word) => ({
+            text: word.text,
+            confidence: word.confidence,
+            bbox: word.bbox,
           }));
           parsedRows.push(...parseScheduleLines(lines).map((row) => ({ ...row, id: `${image.id}-${row.id}` })));
           setImages((current) => current.map((item) =>
